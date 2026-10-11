@@ -13,6 +13,13 @@ find_package(OpenCV 4.6.0 REQUIRED)
 
 add_executable(ArmorDetector
     src/main.cpp
+    src/video_capture.cpp
+)
+
+
+target_include_directories(ArmorDetector
+    PRIVATE
+    include
 )
 
 
