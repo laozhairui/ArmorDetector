@@ -43,4 +43,16 @@ void ColorDetecter::detect(
             select_mask
         );
     }
+    cv::Mat kernel = cv::getStructuringElement(
+        cv::MORPH_RECT,
+        cv::Size(3, 3)
+    );
+    cv::morphologyEx(
+        select_mask,
+        select_mask,
+        cv::MORPH_OPEN,
+        kernel,
+        cv::Point(-1, -1),
+        1
+    );
 }
