@@ -1,0 +1,16 @@
+# CMake build directory
+build/
+
+# Compiled binaries and object files
+*.o
+*.a
+*.so
+*.out
+
+# IDE settings
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*~
