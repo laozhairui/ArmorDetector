@@ -6,6 +6,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 void create_mask_window(const std::string& name)
 {
@@ -64,18 +65,44 @@ int main()
         {
             double area = cv::contourArea(contours[i]);
 
-            if (area < 50)
+            if (area < 10)
             {
                 continue;
             }
 
-            cv::drawContours(
-                display,
-                contours,
-                i,
-                cv::Scalar(0, 255, 0),
-                2
-            );
+            cv::RotatedRect rect = cv::minAreaRect(contours[i]);
+
+            double width = rect.size.width;
+            double height = rect.size.height;
+
+            double long_side = std::max(width, height);
+            double short_side = std::min(width, height);
+
+            if (short_side <= 0)
+            {
+                continue;
+            }
+
+            double aspect_ratio = long_side / short_side;
+
+            if (aspect_ratio < 2.0)
+            {
+                continue;
+            }
+
+            cv::Point2f vertices[4];
+            rect.points(vertices);
+
+            for (int j = 0; j < 4; j++)
+            {
+                cv::line(
+                    display,
+                    vertices[j],
+                    vertices[(j + 1) % 4],
+                    cv::Scalar(0, 255, 0),
+                    2
+                );
+            }
 
             valid_contour_count++;
         }
