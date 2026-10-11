@@ -1,29 +1,25 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.10)
 
-project(ArmorDetector LANGUAGES CXX)
+project(ArmorDetector)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+find_package(OpenCV REQUIRED)
 
-set(OpenCV_DIR /usr/local/lib/cmake/opencv4)
+include_directories(
+    include
+    ${OpenCV_INCLUDE_DIRS}
+)
 
-find_package(OpenCV 4.6.0 REQUIRED)
-
-
-add_executable(ArmorDetector
+add_executable(
+    ArmorDetector
     src/main.cpp
     src/video_capture.cpp
+    src/color_detector.cpp
 )
 
-
-target_include_directories(ArmorDetector
-    PRIVATE
-    include
-)
-
-
-target_link_libraries(ArmorDetector
-    PRIVATE
+target_link_libraries(
+    ArmorDetector
     ${OpenCV_LIBS}
 )
