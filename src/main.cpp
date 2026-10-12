@@ -1,33 +1,40 @@
-
-#include <video_capture.h>
-#include <color_detector.h>
-#include <light_bar.h>
-#include <armor.h>
-
 #include <opencv2/opencv.hpp>
-
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <string>
 #include <vector>
-#include <algorithm>
-#include <cmath>
 
+#include "video_capture.h"
+#include "color_detector.h"
+#include "light_bar.h"
+#include "armor.h"
 
-void create_mask_window(const std::string& name)
+struct ArmorPair
 {
-    cv::namedWindow(name, cv::WINDOW_NORMAL);
-    cv::resizeWindow(name, 640, 480);
-    cv::moveWindow(name, 800, 0);
-}
+    int first;
+    int second;
+    double score;
+};
 
-
-double get_light_bar_angle(const LightBar& bar)
+double get_long_axis_angle(const cv::RotatedRect& rect)
 {
-    double angle = bar.rect.angle;
+    cv::Point2f points[4];
+    rect.points(points);
 
-    if (bar.rect.size.width < bar.rect.size.height)
+    double max_length = 0.0;
+    double angle = 0.0;
+
+    for (int i = 0; i < 4; ++i)
     {
-        angle += 90.0;
+        cv::Point2f edge = points[(i + 1) % 4] - points[i];
+        double length = std::sqrt(edge.x * edge.x + edge.y * edge.y);
+
+        if (length > max_length)
+        {
+            max_length = length;
+            angle = std::atan2(edge.y, edge.x) * 180.0 / CV_PI;
+        }
     }
 
     while (angle >= 90.0)
@@ -43,6 +50,153 @@ double get_light_bar_angle(const LightBar& bar)
     return angle;
 }
 
+double get_angle_difference(double angle1, double angle2)
+{
+    double difference = std::abs(angle1 - angle2);
+
+    if (difference > 90.0)
+    {
+        difference = 180.0 - difference;
+    }
+
+    return difference;
+}
+
+bool is_valid_light_bar(
+    const std::vector<cv::Point>& contour,
+    double frame_area,
+    LightBar& light_bar)
+{
+    double area = cv::contourArea(contour);
+
+    if (area < 10.0 || area > frame_area * 0.05)
+    {
+        return false;
+    }
+
+    cv::RotatedRect rect = cv::minAreaRect(contour);
+
+    double length = std::max(rect.size.width, rect.size.height);
+    double width = std::min(rect.size.width, rect.size.height);
+
+    if (length < 8.0 || width < 1.0)
+    {
+        return false;
+    }
+
+    double aspect_ratio = length / width;
+
+    if (aspect_ratio < 2.0 || aspect_ratio > 10.0)
+    {
+        return false;
+    }
+
+    double rect_area = length * width;
+
+    if (rect_area <= 0.0 || area / rect_area < 0.2)
+    {
+        return false;
+    }
+
+    double angle = get_long_axis_angle(rect);
+    double vertical_deviation = 90.0 - std::abs(angle);
+
+    if (vertical_deviation > 20.0)
+    {
+        return false;
+    }
+
+    light_bar.rect = rect;
+    light_bar.length = length;
+    light_bar.width = width;
+    light_bar.angle = angle;
+
+    return true;
+}
+
+bool is_valid_pair(
+    const LightBar& left,
+    const LightBar& right,
+    double& score)
+{
+    cv::Point2f p1 = left.rect.center;
+    cv::Point2f p2 = right.rect.center;
+
+    if (p1.x > p2.x)
+    {
+        std::swap(p1, p2);
+    }
+
+    double average_length = (left.length + right.length) / 2.0;
+
+    if (average_length <= 0.0)
+    {
+        return false;
+    }
+
+    double length_ratio =
+        std::min(left.length, right.length) /
+        std::max(left.length, right.length);
+
+    if (length_ratio < 0.35)
+    {
+        return false;
+    }
+
+    double angle_diff = get_angle_difference(left.angle, right.angle);
+
+    if (angle_diff > 25.0)
+    {
+        return false;
+    }
+
+    double vertical_diff = std::abs(p1.y - p2.y);
+
+    if (vertical_diff > average_length * 0.8)
+    {
+        return false;
+    }
+
+    double horizontal_distance = std::abs(p2.x - p1.x);
+    double distance_ratio = horizontal_distance / average_length;
+
+    if (distance_ratio < 0.6 || distance_ratio > 5.0)
+    {
+        return false;
+    }
+
+    double width_ratio =
+        std::min(left.width, right.width) /
+        std::max(left.width, right.width);
+
+    if (width_ratio < 0.35)
+    {
+        return false;
+    }
+
+    score = angle_diff * 2.0
+          + vertical_diff / average_length * 20.0
+          + (1.0 - length_ratio) * 30.0
+          + std::abs(distance_ratio - 1.8) * 5.0;
+
+    return true;
+}
+
+void draw_light_bar(cv::Mat& frame, const LightBar& light_bar)
+{
+    cv::Point2f points[4];
+    light_bar.rect.points(points);
+
+    for (int i = 0; i < 4; ++i)
+    {
+        cv::line(
+            frame,
+            points[i],
+            points[(i + 1) % 4],
+            cv::Scalar(0, 255, 0),
+            2);
+    }
+}
 
 int main()
 {
@@ -55,253 +209,138 @@ int main()
     }
 
     ColorDetecter detector;
+    std::string select = "blue";
+
+    cv::namedWindow("Original", cv::WINDOW_NORMAL);
+    cv::namedWindow("Selected Mask", cv::WINDOW_NORMAL);
+
+    cv::resizeWindow("Original", 640, 480);
+    cv::resizeWindow("Selected Mask", 640, 480);
+
+    cv::moveWindow("Original", 0, 0);
+    cv::moveWindow("Selected Mask", 800, 0);
 
     cv::Mat frame;
     cv::Mat select_mask;
-    cv::Mat display;
-
-    std::string select = "blue";
-    std::string mask_window = select + " Mask";
-
-    cv::namedWindow("Original", cv::WINDOW_NORMAL);
-    cv::resizeWindow("Original", 640, 480);
-    cv::moveWindow("Original", 0, 0);
-
-    create_mask_window(mask_window);
 
     while (reader.read_frame(frame))
     {
         detector.detect(frame, select, select_mask);
 
-        display = frame.clone();
-
         std::vector<std::vector<cv::Point>> contours;
-        std::vector<cv::Vec4i> hierarchy;
 
         cv::findContours(
             select_mask.clone(),
             contours,
-            hierarchy,
             cv::RETR_EXTERNAL,
-            cv::CHAIN_APPROX_SIMPLE
-        );
+            cv::CHAIN_APPROX_SIMPLE);
+
+        double frame_area =
+            static_cast<double>(frame.cols) * frame.rows;
 
         std::vector<LightBar> light_bars;
 
-        for (int i = 0; i < static_cast<int>(contours.size()); i++)
+        for (const auto& contour : contours)
         {
-            double area = cv::contourArea(contours[i]);
+            LightBar light_bar;
 
-            if (area < 10)
+            if (is_valid_light_bar(contour, frame_area, light_bar))
             {
-                continue;
+                light_bars.push_back(light_bar);
             }
-
-            cv::RotatedRect rect = cv::minAreaRect(contours[i]);
-
-            double width = rect.size.width;
-            double height = rect.size.height;
-
-            double long_side = std::max(width, height);
-            double short_side = std::min(width, height);
-
-            if (short_side <= 0)
-            {
-                continue;
-            }
-
-            double aspect_ratio = long_side / short_side;
-
-            if (aspect_ratio < 2.0)
-            {
-                continue;
-            }
-
-            LightBar bar;
-
-            bar.rect = rect;
-            bar.length = long_side;
-            bar.width = short_side;
-            bar.angle = get_light_bar_angle(bar);
-
-            light_bars.push_back(bar);
         }
 
+        std::vector<ArmorPair> candidates;
+
+        for (int i = 0; i < static_cast<int>(light_bars.size()); ++i)
+        {
+            for (int j = i + 1; j < static_cast<int>(light_bars.size()); ++j)
+            {
+                double score = 0.0;
+
+                if (is_valid_pair(light_bars[i], light_bars[j], score))
+                {
+                    candidates.push_back({i, j, score});
+                }
+            }
+        }
+
+        std::sort(
+            candidates.begin(),
+            candidates.end(),
+            [](const ArmorPair& a, const ArmorPair& b)
+            {
+                return a.score < b.score;
+            });
+
+        std::vector<bool> used(light_bars.size(), false);
         std::vector<Armor> armors;
 
-        for (size_t i = 0; i < light_bars.size(); i++)
+        for (const auto& candidate : candidates)
         {
-            for (size_t j = i + 1; j < light_bars.size(); j++)
+            if (used[candidate.first] || used[candidate.second])
             {
-                const LightBar& bar1 = light_bars[i];
-                const LightBar& bar2 = light_bars[j];
-
-                double max_length =
-                    std::max(bar1.length, bar2.length);
-
-                if (max_length <= 0)
-                {
-                    continue;
-                }
-
-                double length_diff =
-                    std::abs(bar1.length - bar2.length)
-                    / max_length;
-
-                if (length_diff > 0.3)
-                {
-                    continue;
-                }
-
-                double angle_diff =
-                    std::abs(bar1.angle - bar2.angle);
-
-                if (angle_diff > 15.0)
-                {
-                    continue;
-                }
-
-                double x_diff =
-                    std::abs(
-                        bar1.rect.center.x -
-                        bar2.rect.center.x
-                    );
-
-                double y_diff =
-                    std::abs(
-                        bar1.rect.center.y -
-                        bar2.rect.center.y
-                    );
-
-                double average_length =
-                    (bar1.length + bar2.length) / 2.0;
-
-                double average_width =
-                    (bar1.width + bar2.width) / 2.0;
-
-                if (average_length <= 0 || average_width <= 0)
-                {
-                    continue;
-                }
-
-                if (y_diff > average_length * 0.3)
-                {
-                    continue;
-                }
-
-                if (x_diff <= y_diff)
-                {
-                    continue;
-                }
-
-                double distance_ratio = x_diff / average_length;
-
-                if (distance_ratio < 0.8 || distance_ratio > 3.0)
-                {
-                    continue;
-                }
-
-                double width_ratio =
-                    std::max(bar1.width, bar2.width)
-                    / std::min(bar1.width, bar2.width);
-
-                if (width_ratio > 2.0)
-                {
-                    continue;
-                }
-
-                Armor armor;
-
-                if (bar1.rect.center.x < bar2.rect.center.x)
-                {
-                    armor.left = bar1;
-                    armor.right = bar2;
-                }
-                else
-                {
-                    armor.left = bar2;
-                    armor.right = bar1;
-                }
-
-                armors.push_back(armor);
+                continue;
             }
-        }
 
-        for (const auto& bar : light_bars)
-        {
-            cv::Point2f vertices[4];
+            Armor armor;
+            armor.left = light_bars[candidate.first];
+            armor.right = light_bars[candidate.second];
 
-            bar.rect.points(vertices);
-
-            for (int j = 0; j < 4; j++)
+            if (armor.left.rect.center.x > armor.right.rect.center.x)
             {
-                cv::line(
-                    display,
-                    vertices[j],
-                    vertices[(j + 1) % 4],
-                    cv::Scalar(0, 255, 0),
-                    2
-                );
+                std::swap(armor.left, armor.right);
             }
+
+            armors.push_back(armor);
+            used[candidate.first] = true;
+            used[candidate.second] = true;
         }
 
         for (const auto& armor : armors)
         {
+            draw_light_bar(frame, armor.left);
+            draw_light_bar(frame, armor.right);
+
+            cv::Point2f left_center = armor.left.rect.center;
+            cv::Point2f right_center = armor.right.rect.center;
+
             cv::line(
-                display,
-                armor.left.rect.center,
-                armor.right.rect.center,
+                frame,
+                left_center,
+                right_center,
                 cv::Scalar(0, 0, 255),
-                2
-            );
+                2);
+
+            cv::Point2f center(
+                (left_center.x + right_center.x) / 2.0f,
+                (left_center.y + right_center.y) / 2.0f);
+
+            cv::circle(
+                frame,
+                center,
+                3,
+                cv::Scalar(255, 0, 255),
+                -1);
         }
 
-        cv::putText(
-            display,
-            "LightBars: " + std::to_string(light_bars.size()),
-            cv::Point(20, 35),
-            cv::FONT_HERSHEY_SIMPLEX,
-            0.8,
-            cv::Scalar(0, 255, 0),
-            2
-        );
+        cv::imshow("Original", frame);
+        cv::imshow("Selected Mask", select_mask);
 
-        cv::putText(
-            display,
-            "Armor Candidates: " + std::to_string(armors.size()),
-            cv::Point(20, 70),
-            cv::FONT_HERSHEY_SIMPLEX,
-            0.8,
-            cv::Scalar(0, 0, 255),
-            2
-        );
-
-        cv::imshow("Original", display);
-        cv::imshow(mask_window, select_mask);
-
-        int key = cv::waitKey(1);
+        char key = static_cast<char>(cv::waitKey(1));
 
         if (key == 27)
         {
             break;
         }
-        else if ((key == 'r' || key == 'R') && select != "red")
-        {
-            cv::destroyWindow(mask_window);
 
+        if (key == 'r' || key == 'R')
+        {
             select = "red";
-            mask_window = select + " Mask";
-
-            create_mask_window(mask_window);
         }
-        else if ((key == 'b' || key == 'B') && select != "blue")
+        else if (key == 'b' || key == 'B')
         {
-            cv::destroyWindow(mask_window);
-
             select = "blue";
-            mask_window = select + " Mask";
-
-            create_mask_window(mask_window);
         }
     }
 
